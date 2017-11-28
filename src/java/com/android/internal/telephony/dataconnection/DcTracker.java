@@ -1230,6 +1230,7 @@ public class DcTracker extends Handler {
     protected boolean isNvSubscription() {
         int cdmaSubscriptionSource = CdmaSubscriptionSourceManager.getDefault(mPhone.getContext());
         return cdmaSubscriptionSource == CdmaSubscriptionSourceManager.SUBSCRIPTION_FROM_NV;
+    }
 
     protected boolean getAttachedStatus() {
         return mAttached.get();
