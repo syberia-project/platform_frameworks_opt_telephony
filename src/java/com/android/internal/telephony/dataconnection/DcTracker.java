@@ -16,6 +16,8 @@
 
 package com.android.internal.telephony.dataconnection;
 
+import static android.Manifest.permission.READ_PHONE_STATE;
+
 import android.app.AlarmManager;
 import android.app.PendingIntent;
 import android.app.ProgressDialog;
@@ -252,6 +254,7 @@ public class DcTracker extends Handler {
             } else if (action.equals(CarrierConfigManager.ACTION_CARRIER_CONFIG_CHANGED)) {
                 if (mIccRecords.get() != null && mIccRecords.get().getRecordsLoaded()) {
                     setDefaultDataRoamingEnabled();
+                    mDataEnabledSettings.setDefaultMobileDataEnabled();
                 }
             } else {
                 if (DBG) log("onReceive: Unknown action=" + action);
@@ -1989,8 +1992,8 @@ public class DcTracker extends Handler {
         // a dun-profiled connection so we can't share an existing one
         // On GSM/LTE we can share existing apn connections provided they support
         // this type.
-        if (apnContext.getApnType() != PhoneConstants.APN_TYPE_DUN ||
-                teardownForDun() == false) {
+        if (!apnContext.getApnType().equals(PhoneConstants.APN_TYPE_DUN)
+                || ServiceState.isGsm(mPhone.getServiceState().getRilDataRadioTechnology())) {
             dcac = checkForCompatibleConnectedApnContext(apnContext);
             if (dcac != null) {
                 // Get the dcacApnSetting for the connection we want to share.
@@ -4609,11 +4612,20 @@ public class DcTracker extends Handler {
         if (VDBG_STALL) log("putRecoveryAction: " + action);
     }
 
+    private void broadcastDataStallDetected(int recoveryAction) {
+        Intent intent = new Intent(TelephonyManager.ACTION_DATA_STALL_DETECTED);
+        SubscriptionManager.putPhoneIdAndSubIdExtra(intent, mPhone.getPhoneId());
+        intent.putExtra(TelephonyManager.EXTRA_RECOVERY_ACTION, recoveryAction);
+        mPhone.getContext().sendBroadcast(intent, READ_PHONE_STATE);
+    }
+
     private void doRecovery() {
         if (getOverallState() == DctConstants.State.CONNECTED) {
             // Go through a series of recovery steps, each action transitions to the next action
             final int recoveryAction = getRecoveryAction();
             TelephonyMetrics.getInstance().writeDataStallEvent(mPhone.getPhoneId(), recoveryAction);
+            broadcastDataStallDetected(recoveryAction);
+
             switch (recoveryAction) {
                 case RecoveryAction.GET_DATA_CALL_LIST:
                     EventLog.writeEvent(EventLogTags.DATA_STALL_RECOVERY_GET_DATA_CALL_LIST,

@@ -37,6 +37,7 @@ import android.os.AsyncResult;
 import android.os.BaseBundle;
 import android.os.Build;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Message;
 import android.os.PersistableBundle;
 import android.os.Registrant;
@@ -246,7 +247,9 @@ public class ServiceStateTracker extends Handler {
     private String mCurPlmn = null;
     private boolean mCurShowPlmn = false;
     private boolean mCurShowSpn = false;
-    private int mSubId = SubscriptionManager.INVALID_SUBSCRIPTION_ID;
+    @VisibleForTesting
+    public int mSubId = SubscriptionManager.INVALID_SUBSCRIPTION_ID;
+    private int mPrevSubId = SubscriptionManager.INVALID_SUBSCRIPTION_ID;
 
     private boolean mImsRegistered = false;
 
@@ -257,6 +260,9 @@ public class ServiceStateTracker extends Handler {
 
 
     private final RatRatcheter mRatRatcheter;
+
+    private final HandlerThread mHandlerThread;
+    private final LocaleTracker mLocaleTracker;
 
     private final LocalLog mRoamingLog = new LocalLog(10);
     private final LocalLog mAttachLog = new LocalLog(10);
@@ -277,6 +283,7 @@ public class ServiceStateTracker extends Handler {
             if (DBG) log("SubscriptionListener.onSubscriptionInfoChanged");
             // Set the network type, in case the radio does not restore it.
             int subId = mPhone.getSubId();
+            ServiceStateTracker.this.mPrevSubId = mPreviousSubId.get();
             if (mPreviousSubId.getAndSet(subId) != subId) {
                 if (mSubscriptionController.isActiveSubId(subId)) {
                     Context context = mPhone.getContext();
@@ -506,6 +513,13 @@ public class ServiceStateTracker extends Handler {
                     this, EVENT_NETWORK_STATE_CHANGED, null);
         }
 
+        // Create a new handler thread dedicated for locale tracker because the blocking
+        // getAllCellInfo call requires clients calling from a different thread.
+        mHandlerThread = new HandlerThread(LocaleTracker.class.getSimpleName());
+        mHandlerThread.start();
+        mLocaleTracker = TelephonyComponentFactory.getInstance().makeLocaleTracker(
+                mPhone, mHandlerThread.getLooper());
+
         mCi.registerForImsNetworkStateChanged(this, EVENT_IMS_STATE_CHANGED, null);
         mCi.registerForRadioStateChanged(this, EVENT_RADIO_STATE_CHANGED, null);
         mCi.setOnNITZTime(this, EVENT_NITZ_TIME, null);
@@ -653,6 +667,7 @@ public class ServiceStateTracker extends Handler {
         mCi.unregisterForPhysicalChannelConfiguration(this);
         mSubscriptionManager
             .removeOnSubscriptionsChangedListener(mOnSubscriptionsChangedListener);
+        mHandlerThread.quit();
         mCi.unregisterForImsNetworkStateChanged(this);
         mPhone.getCarrierActionAgent().unregisterForCarrierAction(this,
                 CARRIER_ACTION_SET_RADIO_ENABLED);
@@ -1062,7 +1077,9 @@ public class ServiceStateTracker extends Handler {
             case EVENT_SIM_READY:
                 // Reset the mPreviousSubId so we treat a SIM power bounce
                 // as a first boot.  See b/19194287
-                mOnSubscriptionsChangedListener.mPreviousSubId.set(-1);
+                mOnSubscriptionsChangedListener.mPreviousSubId.set(
+                        SubscriptionManager.INVALID_SUBSCRIPTION_ID);
+                mPrevSubId = SubscriptionManager.INVALID_SUBSCRIPTION_ID;
                 mIsSimReady = true;
                 pollState();
                 // Signal strength polling stops when radio is off
@@ -1501,7 +1518,7 @@ public class ServiceStateTracker extends Handler {
                 getSystemService(Context.TELEPHONY_SERVICE)).
                 getSimOperatorNumericForPhone(mPhone.getPhoneId());
 
-        if (!TextUtils.isEmpty(operatorNumeric) && getCdmaMin() != null) {
+        if (!TextUtils.isEmpty(operatorNumeric) && !TextUtils.isEmpty(getCdmaMin())) {
             return (operatorNumeric + getCdmaMin());
         } else {
             return null;
@@ -1604,6 +1621,10 @@ public class ServiceStateTracker extends Handler {
 
         if (ar.exception != null) {
             CommandException.Error err=null;
+
+            if (ar.exception instanceof IllegalStateException) {
+                log("handlePollStateResult exception " + ar.exception);
+            }
 
             if (ar.exception instanceof CommandException) {
                 err = ((CommandException)(ar.exception)).getCommandError();
@@ -2664,7 +2685,7 @@ public class ServiceStateTracker extends Handler {
         // until cell change or device is OOS
         boolean isDataInService = mNewSS.getDataRegState() == ServiceState.STATE_IN_SERVICE;
 
-        if (!hasLocationChanged && isDataInService) {
+        if (isDataInService) {
             mRatRatcheter.ratchet(mSS, mNewSS, hasLocationChanged);
         }
 
@@ -2844,11 +2865,12 @@ public class ServiceStateTracker extends Handler {
             }
 
             tm.setNetworkOperatorNumericForPhone(mPhone.getPhoneId(), operatorNumeric);
-            updateCarrierMccMncConfiguration(operatorNumeric,
-                    prevOperatorNumeric, mPhone.getContext());
+
             if (isInvalidOperatorNumeric(operatorNumeric)) {
                 if (DBG) log("operatorNumeric " + operatorNumeric + " is invalid");
-                tm.setNetworkCountryIsoForPhone(mPhone.getPhoneId(), "");
+                // Passing empty string is important for the first update. The initial value of
+                // operator numeric in locale tracker is null.
+                mLocaleTracker.updateOperatorNumeric("");
                 mNitzState.handleNetworkUnavailable();
             } else if (mSS.getRilDataRadioTechnology() != ServiceState.RIL_RADIO_TECHNOLOGY_IWLAN) {
                 // If the device is on IWLAN, modems manufacture a ServiceState with the MCC/MNC of
@@ -2860,15 +2882,8 @@ public class ServiceStateTracker extends Handler {
                     setOperatorIdd(operatorNumeric);
                 }
 
-                // Update ISO.
-                String countryIsoCode = "";
-                try {
-                    String mcc = operatorNumeric.substring(0, 3);
-                    countryIsoCode = MccTable.countryCodeForMcc(Integer.parseInt(mcc));
-                } catch (NumberFormatException | StringIndexOutOfBoundsException ex) {
-                    loge("pollStateDone: countryCodeForMcc error: " + ex);
-                }
-                tm.setNetworkCountryIsoForPhone(mPhone.getPhoneId(), countryIsoCode);
+                mLocaleTracker.updateOperatorNumeric(operatorNumeric);
+                String countryIsoCode = mLocaleTracker.getCurrentCountry();
 
                 // Update Time Zone.
                 boolean iccCardExists = iccCardExists();
@@ -3003,8 +3018,7 @@ public class ServiceStateTracker extends Handler {
             if (!hasBrandOverride && (mCi.getRadioState().isOn()) && (mPhone.isEriFileLoaded()) &&
                     (!ServiceState.isLte(mSS.getRilVoiceRadioTechnology()) ||
                             mPhone.getContext().getResources().getBoolean(com.android.internal.R.
-                                    bool.config_LTE_eri_for_network_name)) &&
-                                    (!mIsSubscriptionFromRuim)) {
+                                    bool.config_LTE_eri_for_network_name))) {
                 // Only when CDMA is in service, ERI will take effect
                 String eriText = mSS.getOperatorAlpha();
                 // Now the Phone sees the new ServiceState so it can get the new ERI text
@@ -3466,17 +3480,19 @@ public class ServiceStateTracker extends Handler {
     }
 
     /**
-     * Cancels all notifications posted to NotificationManager. These notifications for restricted
-     * state and rejection cause for cs registration are no longer valid after the SIM has been
-     * removed.
+     * Cancels all notifications posted to NotificationManager for this subId. These notifications
+     * for restricted state and rejection cause for cs registration are no longer valid after the
+     * SIM has been removed.
      */
     private void cancelAllNotifications() {
-        if (DBG) log("setNotification: cancelAllNotifications");
+        if (DBG) log("cancelAllNotifications: mPrevSubId=" + mPrevSubId);
         NotificationManager notificationManager = (NotificationManager)
                 mPhone.getContext().getSystemService(Context.NOTIFICATION_SERVICE);
-        notificationManager.cancel(PS_NOTIFICATION);
-        notificationManager.cancel(CS_NOTIFICATION);
-        notificationManager.cancel(CS_REJECT_CAUSE_NOTIFICATION);
+        if (SubscriptionManager.isValidSubscriptionId(mPrevSubId)) {
+            notificationManager.cancel(Integer.toString(mPrevSubId), PS_NOTIFICATION);
+            notificationManager.cancel(Integer.toString(mPrevSubId), CS_NOTIFICATION);
+            notificationManager.cancel(Integer.toString(mPrevSubId), CS_REJECT_CAUSE_NOTIFICATION);
+        }
     }
 
     /**
@@ -3488,6 +3504,12 @@ public class ServiceStateTracker extends Handler {
     @VisibleForTesting
     public void setNotification(int notifyType) {
         if (DBG) log("setNotification: create notification " + notifyType);
+
+        if (!SubscriptionManager.isValidSubscriptionId(mSubId)) {
+            // notifications are posted per-sub-id, so return if current sub-id is invalid
+            loge("cannot setNotification on invalid subid mSubId=" + mSubId);
+            return;
+        }
 
         // Needed because sprout RIL sends these when they shouldn't?
         boolean isSetNotification = mPhone.getContext().getResources().getBoolean(
@@ -3520,6 +3542,10 @@ public class ServiceStateTracker extends Handler {
         int notificationId = CS_NOTIFICATION;
         int icon = com.android.internal.R.drawable.stat_sys_warning;
 
+        final boolean multipleSubscriptions = (((TelephonyManager) mPhone.getContext()
+                  .getSystemService(Context.TELEPHONY_SERVICE)).getPhoneCount() > 1);
+        final int simNumber = mSubscriptionController.getSlotIndex(mSubId) + 1;
+
         switch (notifyType) {
             case PS_ENABLED:
                 long dataSubId = SubscriptionManager.getDefaultDataSubscriptionId();
@@ -3528,37 +3554,52 @@ public class ServiceStateTracker extends Handler {
                 }
                 notificationId = PS_NOTIFICATION;
                 title = context.getText(com.android.internal.R.string.RestrictedOnDataTitle);
-                details = context.getText(com.android.internal.R.string.RestrictedStateContent);
+                details = multipleSubscriptions
+                        ? context.getString(
+                                com.android.internal.R.string.RestrictedStateContentMsimTemplate,
+                                simNumber) :
+                        context.getText(com.android.internal.R.string.RestrictedStateContent);
                 break;
             case PS_DISABLED:
                 notificationId = PS_NOTIFICATION;
                 break;
             case CS_ENABLED:
                 title = context.getText(com.android.internal.R.string.RestrictedOnAllVoiceTitle);
-                details = context.getText(
-                        com.android.internal.R.string.RestrictedStateContent);
+                details = multipleSubscriptions
+                        ? context.getString(
+                                com.android.internal.R.string.RestrictedStateContentMsimTemplate,
+                                simNumber) :
+                        context.getText(com.android.internal.R.string.RestrictedStateContent);
                 break;
             case CS_NORMAL_ENABLED:
                 title = context.getText(com.android.internal.R.string.RestrictedOnNormalTitle);
-                details = context.getText(com.android.internal.R.string.RestrictedStateContent);
+                details = multipleSubscriptions
+                        ? context.getString(
+                                com.android.internal.R.string.RestrictedStateContentMsimTemplate,
+                                simNumber) :
+                        context.getText(com.android.internal.R.string.RestrictedStateContent);
                 break;
             case CS_EMERGENCY_ENABLED:
                 title = context.getText(com.android.internal.R.string.RestrictedOnEmergencyTitle);
-                details = context.getText(
-                        com.android.internal.R.string.RestrictedStateContent);
+                details = multipleSubscriptions
+                        ? context.getString(
+                                com.android.internal.R.string.RestrictedStateContentMsimTemplate,
+                                simNumber) :
+                        context.getText(com.android.internal.R.string.RestrictedStateContent);
                 break;
             case CS_DISABLED:
                 // do nothing and cancel the notification later
                 break;
             case CS_REJECT_CAUSE_ENABLED:
                 notificationId = CS_REJECT_CAUSE_NOTIFICATION;
-                int resId = selectResourceForRejectCode(mRejectCode);
+                int resId = selectResourceForRejectCode(mRejectCode, multipleSubscriptions);
                 if (0 == resId) {
                     loge("setNotification: mRejectCode=" + mRejectCode + " is not handled.");
                     return;
                 } else {
                     icon = com.android.internal.R.drawable.stat_notify_mmcc_indication_icn;
-                    title = Resources.getSystem().getString(resId);
+                    // if using the single SIM resource, mSubId will be ignored
+                    title = context.getString(resId, mSubId);
                     details = null;
                 }
                 break;
@@ -3566,7 +3607,7 @@ public class ServiceStateTracker extends Handler {
 
         if (DBG) {
             log("setNotification, create notification, notifyType: " + notifyType
-                    + ", title: " + title + ", details: " + details);
+                    + ", title: " + title + ", details: " + details + ", subId: " + mSubId);
         }
 
         mNotification = new Notification.Builder(context)
@@ -3587,10 +3628,25 @@ public class ServiceStateTracker extends Handler {
 
         if (notifyType == PS_DISABLED || notifyType == CS_DISABLED) {
             // cancel previous post notification
-            notificationManager.cancel(notificationId);
+            notificationManager.cancel(Integer.toString(mSubId), notificationId);
         } else {
-            // update restricted state notification
-            notificationManager.notify(notificationId, mNotification);
+            boolean show = false;
+            if (mSS.isEmergencyOnly() && notifyType == CS_EMERGENCY_ENABLED) {
+                // if reg state is emergency only, always show restricted emergency notification.
+                show = true;
+            } else if (notifyType == CS_REJECT_CAUSE_ENABLED) {
+                // always show notification due to CS reject irrespective of service state.
+                show = true;
+            } else if (mSS.getState() == ServiceState.STATE_IN_SERVICE) {
+                // for non in service states, we have system UI and signal bar to indicate limited
+                // service. No need to show notification again. This also helps to mitigate the
+                // issue if phone go to OOS and camp to other networks and received restricted ind.
+                show = true;
+            }
+            // update restricted state notification for this subId
+            if (show) {
+                notificationManager.notify(Integer.toString(mSubId), notificationId, mNotification);
+            }
         }
     }
 
@@ -3600,20 +3656,28 @@ public class ServiceStateTracker extends Handler {
      *
      * @param rejCode should be compatible with TS 24.008.
      */
-    private int selectResourceForRejectCode(int rejCode) {
+    private int selectResourceForRejectCode(int rejCode, boolean multipleSubscriptions) {
         int rejResourceId = 0;
         switch (rejCode) {
             case 1:// Authentication reject
-                rejResourceId = com.android.internal.R.string.mmcc_authentication_reject;
+                rejResourceId = multipleSubscriptions
+                        ? com.android.internal.R.string.mmcc_authentication_reject_msim_template :
+                        com.android.internal.R.string.mmcc_authentication_reject;
                 break;
             case 2:// IMSI unknown in HLR
-                rejResourceId = com.android.internal.R.string.mmcc_imsi_unknown_in_hlr;
+                rejResourceId = multipleSubscriptions
+                        ? com.android.internal.R.string.mmcc_imsi_unknown_in_hlr_msim_template :
+                        com.android.internal.R.string.mmcc_imsi_unknown_in_hlr;
                 break;
             case 3:// Illegal MS
-                rejResourceId = com.android.internal.R.string.mmcc_illegal_ms;
+                rejResourceId = multipleSubscriptions
+                        ? com.android.internal.R.string.mmcc_illegal_ms_msim_template :
+                        com.android.internal.R.string.mmcc_illegal_ms;
                 break;
             case 6:// Illegal ME
-                rejResourceId = com.android.internal.R.string.mmcc_illegal_me;
+                rejResourceId = multipleSubscriptions
+                        ? com.android.internal.R.string.mmcc_illegal_me_msim_template :
+                        com.android.internal.R.string.mmcc_illegal_me;
                 break;
             default:
                 // The other codes are not defined or not required by operators till now.
@@ -4281,6 +4345,8 @@ public class ServiceStateTracker extends Handler {
         pw.println(" mLteRsrpBoost=" + mLteRsrpBoost);
         dumpEarfcnPairList(pw);
 
+        mLocaleTracker.dump(fd, pw, args);
+
         pw.println(" Roaming Log:");
         IndentingPrintWriter ipw = new IndentingPrintWriter(pw, "  ");
         ipw.increaseIndent();
@@ -4599,5 +4665,9 @@ public class ServiceStateTracker extends Handler {
         }
         // Return static default defined in CarrierConfigManager.
         return CarrierConfigManager.getDefaultConfig();
+    }
+
+    public LocaleTracker getLocaleTracker() {
+        return mLocaleTracker;
     }
 }

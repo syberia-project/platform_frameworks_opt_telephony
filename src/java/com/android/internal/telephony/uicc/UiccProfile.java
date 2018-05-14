@@ -104,6 +104,7 @@ public class UiccProfile extends IccCard {
     private boolean mDisposed = false;
 
     private RegistrantList mCarrierPrivilegeRegistrants = new RegistrantList();
+    private RegistrantList mOperatorBrandOverrideRegistrants = new RegistrantList();
 
     private final int mPhoneId;
 
@@ -157,7 +158,13 @@ public class UiccProfile extends IccCard {
     public final Handler mHandler = new Handler() {
         @Override
         public void handleMessage(Message msg) {
-            if (mDisposed) {
+            // We still need to handle the following response messages even the UiccProfile has been
+            // disposed because whoever sent the request may be still waiting for the response.
+            if (mDisposed && msg.what != EVENT_OPEN_LOGICAL_CHANNEL_DONE
+                    && msg.what != EVENT_CLOSE_LOGICAL_CHANNEL_DONE
+                    && msg.what != EVENT_TRANSMIT_APDU_LOGICAL_CHANNEL_DONE
+                    && msg.what != EVENT_TRANSMIT_APDU_BASIC_CHANNEL_DONE
+                    && msg.what != EVENT_SIM_IO_DONE) {
                 loge("handleMessage: Received " + msg.what
                         + " after dispose(); ignoring the message");
                 return;
@@ -337,6 +344,7 @@ public class UiccProfile extends IccCard {
                 mIccRecords.setServiceProviderName(ccName);
             }
             mTelephonyManager.setSimOperatorNameForPhone(mPhoneId, ccName);
+            mOperatorBrandOverrideRegistrants.notifyRegistrants();
         }
 
         updateCarrierNameForSubscription(subCon, subId);
@@ -411,14 +419,12 @@ public class UiccProfile extends IccCard {
             setExternalState(IccCardConstants.State.CARD_RESTRICTED);
             return;
         }
-        if (mUiccCard.getCardState() == IccCardStatus.CardState.CARDSTATE_ABSENT) {
-            setExternalState(IccCardConstants.State.ABSENT);
-            return;
-        }
+
         if (mUiccCard instanceof EuiccCard && ((EuiccCard) mUiccCard).getEid() == null) {
             if (DBG) log("EID is not ready yet.");
             return;
         }
+
         // By process of elimination, the UICC Card State = PRESENT and state needs to be decided
         // based on apps
         if (mUiccApplication == null) {
@@ -1020,6 +1026,20 @@ public class UiccProfile extends IccCard {
     }
 
     /**
+     * Registers the handler when operator brand name is overridden.
+     *
+     * @param h Handler for notification message.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+    public void registerForOpertorBrandOverride(Handler h, int what, Object obj) {
+        synchronized (mLock) {
+            Registrant r = new Registrant(h, what, obj);
+            mOperatorBrandOverrideRegistrants.add(r);
+        }
+    }
+
+    /**
      * Registers the handler when carrier privilege rules are loaded.
      *
      * @param h Handler for notification message.
@@ -1046,6 +1066,17 @@ public class UiccProfile extends IccCard {
     public void unregisterForCarrierPrivilegeRulesLoaded(Handler h) {
         synchronized (mLock) {
             mCarrierPrivilegeRegistrants.remove(h);
+        }
+    }
+
+    /**
+     * Unregister for notifications when operator brand name is overriden.
+     *
+     * @param h Handler to be removed from the registrant list.
+     */
+    public void unregisterForOperatorBrandOverride(Handler h) {
+        synchronized (mLock) {
+            mOperatorBrandOverrideRegistrants.remove(h);
         }
     }
 
@@ -1449,6 +1480,7 @@ public class UiccProfile extends IccCard {
         } else {
             spEditor.putString(key, brand).commit();
         }
+        mOperatorBrandOverrideRegistrants.notifyRegistrants();
         return true;
     }
 
@@ -1461,21 +1493,7 @@ public class UiccProfile extends IccCard {
             return null;
         }
         SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(mContext);
-        String brandName = sp.getString(OPERATOR_BRAND_OVERRIDE_PREFIX + iccId, null);
-        if (brandName == null) {
-            // Check if  CarrierConfig sets carrier name
-            CarrierConfigManager manager = (CarrierConfigManager)
-                    mContext.getSystemService(Context.CARRIER_CONFIG_SERVICE);
-            int subId = SubscriptionController.getInstance().getSubIdUsingPhoneId(mPhoneId);
-            if (manager != null) {
-                PersistableBundle bundle = manager.getConfigForSubId(subId);
-                if (bundle != null && bundle.getBoolean(
-                        CarrierConfigManager.KEY_CARRIER_NAME_OVERRIDE_BOOL)) {
-                    brandName = bundle.getString(CarrierConfigManager.KEY_CARRIER_NAME_STRING);
-                }
-            }
-        }
-        return brandName;
+        return sp.getString(OPERATOR_BRAND_OVERRIDE_PREFIX + iccId, null);
     }
 
     /**
@@ -1507,6 +1525,15 @@ public class UiccProfile extends IccCard {
     }
 
     /**
+     * Reloads carrier privileges as if a change were just detected.  Useful to force a profile
+     * refresh without having to physically insert or remove a SIM card.
+     */
+    @VisibleForTesting
+    public void refresh() {
+        mHandler.sendMessage(mHandler.obtainMessage(EVENT_CARRIER_PRIVILEGES_LOADED));
+    }
+
+    /**
      * Dump
      */
     public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
@@ -1516,6 +1543,10 @@ public class UiccProfile extends IccCard {
         for (int i = 0; i < mCarrierPrivilegeRegistrants.size(); i++) {
             pw.println("  mCarrierPrivilegeRegistrants[" + i + "]="
                     + ((Registrant) mCarrierPrivilegeRegistrants.get(i)).getHandler());
+        }
+        for (int i = 0; i < mOperatorBrandOverrideRegistrants.size(); i++) {
+            pw.println("  mOperatorBrandOverrideRegistrants[" + i + "]="
+                    + ((Registrant) mOperatorBrandOverrideRegistrants.get(i)).getHandler());
         }
         pw.println(" mUniversalPinState=" + mUniversalPinState);
         pw.println(" mGsmUmtsSubscriptionAppIndex=" + mGsmUmtsSubscriptionAppIndex);

@@ -39,6 +39,7 @@ import android.util.SparseArray;
 import com.android.internal.telephony.uicc.IccSlotStatus;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -49,7 +50,6 @@ public class RadioConfig extends Handler {
     private static final boolean DBG = true;
     private static final boolean VDBG = false;   //STOPSHIP if true
 
-    private static final String RADIO_CONFIG_SERVICE_NAME = "radioconfig";
     private static final int EVENT_SERVICE_DEAD = 1;
 
     private final boolean mIsMobileNetworkSupported;
@@ -166,7 +166,7 @@ public class RadioConfig extends Handler {
         }
 
         try {
-            mRadioConfigProxy = IRadioConfig.getService(RADIO_CONFIG_SERVICE_NAME, true);
+            mRadioConfigProxy = IRadioConfig.getService(true);
             if (mRadioConfigProxy != null) {
                 mRadioConfigProxy.linkToDeath(mServiceDeathRecipient,
                         mRadioConfigProxyCookie.incrementAndGet());
@@ -267,7 +267,8 @@ public class RadioConfig extends Handler {
                     mDefaultWorkSource);
 
             if (DBG) {
-                logd(rr.serialString() + "> " + requestToString(rr.mRequest));
+                logd(rr.serialString() + "> " + requestToString(rr.mRequest)
+                        + " " + Arrays.toString(physicalSlots));
             }
 
             try {
@@ -287,7 +288,7 @@ public class RadioConfig extends Handler {
         return arrayList;
     }
 
-    private static String requestToString(int request) {
+    static String requestToString(int request) {
         switch (request) {
             case RIL_REQUEST_GET_SLOT_STATUS:
                 return "GET_SLOT_STATUS";

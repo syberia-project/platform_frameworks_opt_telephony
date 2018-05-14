@@ -84,6 +84,7 @@ import com.android.internal.R;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.telephony.cdma.sms.UserData;
 import com.android.internal.telephony.GsmAlphabet.TextEncodingDetails;
+import com.android.internal.telephony.SmsUsageMonitor.SmsAuthorizationCallback;
 import com.android.internal.telephony.uicc.UiccCard;
 import com.android.internal.telephony.uicc.UiccController;
 
@@ -630,7 +631,7 @@ public abstract class SMSDispatcher extends Handler {
      * Send an SMS PDU. Usually just calls {@link sendRawPdu}.
      */
     private void sendSubmitPdu(SmsTracker tracker) {
-        if (shouldBlockSms()) {
+        if (shouldBlockSmsForEcbm()) {
             Rlog.d(TAG, "Block SMS in Emergency Callback mode");
             tracker.onFailed(mContext, SmsManager.RESULT_ERROR_NO_SERVICE, 0/*errorCode*/);
         } else {
@@ -639,9 +640,9 @@ public abstract class SMSDispatcher extends Handler {
     }
 
     /**
-     * @return true if MO SMS should be blocked.
+     * @return true if MO SMS should be blocked for Emergency Callback Mode.
      */
-    protected abstract boolean shouldBlockSms();
+    protected abstract boolean shouldBlockSmsForEcbm();
 
     /**
      * Called when SMS send completes. Broadcasts a sentIntent on success.
@@ -1177,7 +1178,23 @@ public abstract class SMSDispatcher extends Handler {
                 return;
             }
 
-            sendSms(tracker);
+            if (mSmsDispatchersController.getUsageMonitor().isSmsAuthorizationEnabled()) {
+                final SmsAuthorizationCallback callback = new SmsAuthorizationCallback() {
+                    @Override
+                    public void onAuthorizationResult(final boolean accepted) {
+                        if (accepted) {
+                            sendSms(tracker);
+                        } else {
+                            tracker.onFailed(mContext, RESULT_ERROR_GENERIC_FAILURE,
+                                    SmsUsageMonitor.ERROR_CODE_BLOCKED);
+                        }
+                    }
+                };
+               mSmsDispatchersController.getUsageMonitor().authorizeOutgoingSms(tracker.mAppInfo,
+                        tracker.mDestAddress,tracker.mFullMessageText, callback, this);
+            } else {
+                sendSms(tracker);
+            }
         }
 
         if (PhoneNumberUtils.isLocalEmergencyNumber(mContext, tracker.mDestAddress)) {

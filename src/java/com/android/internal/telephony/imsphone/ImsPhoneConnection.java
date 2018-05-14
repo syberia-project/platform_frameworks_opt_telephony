@@ -23,6 +23,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
+import android.os.Messenger;
 import android.os.PersistableBundle;
 import android.os.PowerManager;
 import android.os.Registrant;
@@ -80,6 +81,7 @@ public class ImsPhoneConnection extends Connection implements
 
     private UUSInfo mUusInfo;
     private Handler mHandler;
+    private Messenger mHandlerMessenger;
 
     private PowerManager.WakeLock mPartialWakeLock;
 
@@ -172,6 +174,7 @@ public class ImsPhoneConnection extends Connection implements
 
         mOwner = ct;
         mHandler = new MyHandler(mOwner.getLooper());
+        mHandlerMessenger = new Messenger(mHandler);
         mImsCall = imsCall;
 
         if ((imsCall != null) && (imsCall.getCallProfile() != null)) {
@@ -516,7 +519,9 @@ public class ImsPhoneConnection extends Connection implements
     private boolean
     processPostDialChar(char c) {
         if (PhoneNumberUtils.is12Key(c)) {
-            mOwner.sendDtmf(c, mHandler.obtainMessage(EVENT_DTMF_DONE));
+            Message dtmfComplete = mHandler.obtainMessage(EVENT_DTMF_DONE);
+            dtmfComplete.replyTo = mHandlerMessenger;
+            mOwner.sendDtmf(c, dtmfComplete);
         } else if (c == PhoneNumberUtils.PAUSE) {
             // From TS 22.101:
             // It continues...
@@ -968,6 +973,15 @@ public class ImsPhoneConnection extends Connection implements
                 changed = true;
             }
 
+            if (!mOwner.isViLteDataMetered()) {
+                Rlog.v(LOG_TAG, "data is not metered");
+            } else {
+                if (mImsVideoCallProviderWrapper != null) {
+                    mImsVideoCallProviderWrapper.setIsVideoEnabled(
+                            hasCapabilities(Connection.Capability.SUPPORTS_VT_LOCAL_BIDIRECTIONAL));
+                }
+            }
+
             int newAudioQuality =
                     getAudioQualityFromCallProfile(localCallProfile, remoteCallProfile);
             if (getAudioQuality() != newAudioQuality) {
@@ -1313,14 +1327,10 @@ public class ImsPhoneConnection extends Connection implements
         mShouldIgnoreVideoStateChanges = false;
     }
 
-    public void handleDataEnabledChange(boolean isDataEnabled) {
-        mIsVideoEnabled = isDataEnabled;
-        Rlog.i(LOG_TAG, "handleDataEnabledChange: isDataEnabled=" + isDataEnabled
+    public void setVideoEnabled(boolean isVideoEnabled) {
+        mIsVideoEnabled = isVideoEnabled;
+        Rlog.i(LOG_TAG, "setVideoEnabled: mIsVideoEnabled = " + mIsVideoEnabled
                 + "; updating local video availability.");
         updateMediaCapabilities(getImsCall());
-        if (mImsVideoCallProviderWrapper != null) {
-            mImsVideoCallProviderWrapper.setIsVideoEnabled(
-                    hasCapabilities(Connection.Capability.SUPPORTS_VT_LOCAL_BIDIRECTIONAL));
-        }
     }
 }
