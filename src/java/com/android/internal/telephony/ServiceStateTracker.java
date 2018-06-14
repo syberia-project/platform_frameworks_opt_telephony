@@ -582,6 +582,11 @@ public class ServiceStateTracker extends Handler {
         }
 
         // If we are previously in service, we need to notify that we are out of service now.
+        if (mSS != null && mSS.getVoiceRegState() == ServiceState.STATE_IN_SERVICE) {
+            mNetworkDetachedRegistrants.notifyRegistrants();
+        }
+
+        // If we are previously in service, we need to notify that we are out of service now.
         if (mSS != null && mSS.getDataRegState() == ServiceState.STATE_IN_SERVICE) {
             mDetachedRegistrants.notifyRegistrants();
         }
@@ -671,6 +676,10 @@ public class ServiceStateTracker extends Handler {
         mCi.unregisterForImsNetworkStateChanged(this);
         mPhone.getCarrierActionAgent().unregisterForCarrierAction(this,
                 CARRIER_ACTION_SET_RADIO_ENABLED);
+        if (mCSST != null) {
+            mCSST.dispose();
+            mCSST = null;
+        }
     }
 
     public boolean getDesiredPowerState() {
@@ -2869,8 +2878,9 @@ public class ServiceStateTracker extends Handler {
             if (isInvalidOperatorNumeric(operatorNumeric)) {
                 if (DBG) log("operatorNumeric " + operatorNumeric + " is invalid");
                 // Passing empty string is important for the first update. The initial value of
-                // operator numeric in locale tracker is null.
-                mLocaleTracker.updateOperatorNumeric("");
+                // operator numeric in locale tracker is null. The async update will allow getting
+                // cell info from the modem instead of using the cached one.
+                mLocaleTracker.updateOperatorNumericAsync("");
                 mNitzState.handleNetworkUnavailable();
             } else if (mSS.getRilDataRadioTechnology() != ServiceState.RIL_RADIO_TECHNOLOGY_IWLAN) {
                 // If the device is on IWLAN, modems manufacture a ServiceState with the MCC/MNC of
@@ -2882,7 +2892,7 @@ public class ServiceStateTracker extends Handler {
                     setOperatorIdd(operatorNumeric);
                 }
 
-                mLocaleTracker.updateOperatorNumeric(operatorNumeric);
+                mLocaleTracker.updateOperatorNumericSync(operatorNumeric);
                 String countryIsoCode = mLocaleTracker.getCurrentCountry();
 
                 // Update Time Zone.
@@ -3018,7 +3028,8 @@ public class ServiceStateTracker extends Handler {
             if (!hasBrandOverride && (mCi.getRadioState().isOn()) && (mPhone.isEriFileLoaded()) &&
                     (!ServiceState.isLte(mSS.getRilVoiceRadioTechnology()) ||
                             mPhone.getContext().getResources().getBoolean(com.android.internal.R.
-                                    bool.config_LTE_eri_for_network_name))) {
+                                    bool.config_LTE_eri_for_network_name)) &&
+                                    (!mIsSubscriptionFromRuim)) {
                 // Only when CDMA is in service, ERI will take effect
                 String eriText = mSS.getOperatorAlpha();
                 // Now the Phone sees the new ServiceState so it can get the new ERI text

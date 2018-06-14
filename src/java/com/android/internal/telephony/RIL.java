@@ -293,11 +293,6 @@ public class RIL extends BaseCommands implements CommandsInterface {
                             " mRadioProxyCookie = " + mRadioProxyCookie.get());
                     if ((long) msg.obj == mRadioProxyCookie.get()) {
                         resetProxyAndRequestList();
-
-                        // todo: rild should be back up since message was sent with a delay. this is
-                        // a hack.
-                        getRadioProxy(null);
-                        getOemHookProxy(null);
                     }
                     break;
             }
@@ -350,6 +345,7 @@ public class RIL extends BaseCommands implements CommandsInterface {
         clearRequestList(RADIO_NOT_AVAILABLE, false);
 
         getRadioProxy(null);
+        getOemHookProxy(null);
     }
 
     /** Returns a {@link IRadio} instance or null if the service is not available. */
@@ -416,7 +412,7 @@ public class RIL extends BaseCommands implements CommandsInterface {
 
         try {
             mOemHookProxy = IOemHook.getService(
-                    HIDL_SERVICE_NAME[mPhoneId == null ? 0 : mPhoneId]);
+                    HIDL_SERVICE_NAME[mPhoneId == null ? 0 : mPhoneId], true);
             if (mOemHookProxy != null) {
                 // not calling linkToDeath() as ril service runs in the same process and death
                 // notification for that should be sufficient
@@ -435,12 +431,6 @@ public class RIL extends BaseCommands implements CommandsInterface {
                         CommandException.fromRilErrno(RADIO_NOT_AVAILABLE));
                 result.sendToTarget();
             }
-
-            // if service is not up, treat it like death notification to try to get service again
-            mRilHandler.sendMessageDelayed(
-                    mRilHandler.obtainMessage(EVENT_RADIO_PROXY_DEAD,
-                            mRadioProxyCookie.incrementAndGet()),
-                    IRADIO_GET_SERVICE_DELAY_MILLIS);
         }
 
         return mOemHookProxy;
@@ -1205,18 +1195,27 @@ public class RIL extends BaseCommands implements CommandsInterface {
             try {
                 if (radioProxy12 == null) {
                     // IRadio V1.0
+
+                    // Getting data RAT here is just a workaround to support the older 1.0 vendor
+                    // RIL. The new data service interface passes access network type instead of
+                    // RAT for setup data request. It is impossible to convert access network
+                    // type back to RAT here, so we directly get the data RAT from phone.
+                    int dataRat = ServiceState.RIL_RADIO_TECHNOLOGY_UNKNOWN;
+                    Phone phone = PhoneFactory.getPhone(mPhoneId);
+                    if (phone != null) {
+                        ServiceState ss = phone.getServiceState();
+                        if (ss != null) {
+                            dataRat = ss.getRilDataRadioTechnology();
+                        }
+                    }
                     if (RILJ_LOGD) {
                         riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
-                                + ",radioTechnology=unknown,isRoaming=" + isRoaming
+                                + ",dataRat=" + dataRat + ",isRoaming=" + isRoaming
                                 + ",allowRoaming=" + allowRoaming + "," + dataProfile);
                     }
-                    // The RAT field in setup data call request was never used before. Starting from
-                    // P, the new API passes in access network type instead of RAT. Since it's
-                    // not possible to convert access network type back to RAT, but we still need to
-                    // support the 1.0 API, we passed in unknown RAT to the modem. And modem must
-                    // setup the data call on its current camped network.
-                    radioProxy.setupDataCall(rr.mSerial, ServiceState.RIL_RADIO_TECHNOLOGY_UNKNOWN,
-                            dpi, dataProfile.isModemCognitive(), allowRoaming, isRoaming);
+
+                    radioProxy.setupDataCall(rr.mSerial, dataRat, dpi,
+                            dataProfile.isModemCognitive(), allowRoaming, isRoaming);
                 } else {
                     // IRadio V1.2
                     ArrayList<String> addresses = new ArrayList<>();
@@ -2017,6 +2016,10 @@ public class RIL extends BaseCommands implements CommandsInterface {
             } catch (RemoteException | RuntimeException e) {
                 handleRadioProxyExceptionForRR(rr, "invokeOemRilRequestRaw", e);
             }
+        } else {
+            // OEM Hook service is disabled for P and later devices.
+            // Deprecated OEM Hook APIs will perform dummy before being removed.
+            if (RILJ_LOGD) riljLog("Radio Oem Hook Service is disabled for P and later devices. ");
         }
     }
 
@@ -2042,6 +2045,10 @@ public class RIL extends BaseCommands implements CommandsInterface {
             } catch (RemoteException | RuntimeException e) {
                 handleRadioProxyExceptionForRR(rr, "invokeOemRilRequestStrings", e);
             }
+        } else {
+            // OEM Hook service is disabled for P and later devices.
+            // Deprecated OEM Hook APIs will perform dummy before being removed.
+            if (RILJ_LOGD) riljLog("Radio Oem Hook Service is disabled for P and later devices. ");
         }
     }
 
@@ -5045,6 +5052,8 @@ public class RIL extends BaseCommands implements CommandsInterface {
                 return "RIL_UNSOL_ICC_SLOT_STATUS";
             case RIL_UNSOL_KEEPALIVE_STATUS:
                 return "RIL_UNSOL_KEEPALIVE_STATUS";
+            case RIL_UNSOL_PHYSICAL_CHANNEL_CONFIG:
+                return "RIL_UNSOL_PHYSICAL_CHANNEL_CONFIG";
             default:
                 return "<unknown response>";
         }
