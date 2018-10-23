@@ -365,12 +365,18 @@ public class DcTracker extends Handler {
             return "{txSum=" + txPkts + " rxSum=" + rxPkts + "}";
         }
 
-        public void updateDataStallTxRxSum() {
+        /**
+         * Get Tcp Tx/Rx packet count from TrafficStats
+         */
+        public void updateTcpTxRxSum() {
             this.txPkts = TrafficStats.getMobileTcpTxPackets();
             this.rxPkts = TrafficStats.getMobileTcpRxPackets();
         }
 
-        public void updateDataActivityTxRxSum() {
+        /**
+         * Get total Tx/Rx packet count from TrafficStats
+         */
+        public void updateTotalTxRxSum() {
             this.txPkts = TrafficStats.getMobileTxPackets();
             this.rxPkts = TrafficStats.getMobileRxPackets();
         }
@@ -4583,7 +4589,7 @@ public class DcTracker extends Handler {
 
         TxRxSum preTxRxSum = new TxRxSum(mTxPkts, mRxPkts);
         TxRxSum curTxRxSum = new TxRxSum();
-        curTxRxSum.updateDataActivityTxRxSum();
+        curTxRxSum.updateTotalTxRxSum();
         mTxPkts = curTxRxSum.txPkts;
         mRxPkts = curTxRxSum.rxPkts;
 
@@ -4756,7 +4762,7 @@ public class DcTracker extends Handler {
         long sent, received;
 
         TxRxSum preTxRxSum = new TxRxSum(mDataStallTxRxSum);
-        mDataStallTxRxSum.updateDataStallTxRxSum();
+        mDataStallTxRxSum.updateTcpTxRxSum();
 
         if (VDBG_STALL) {
             log("updateDataStallInfo: mDataStallTxRxSum=" + mDataStallTxRxSum +
