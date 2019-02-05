@@ -827,40 +827,10 @@ public class ImsPhoneCallTrackerTest extends TelephonyTest {
 
     @Test
     @SmallTest
-    public void testCallResumeStateNotResetByHoldFailure() throws ImsException {
-        mCTUT.setSwitchingFgAndBgCallsValue(true);
-        if (mImsCallListener != null) {
-            mImsCallListener.onCallHoldFailed(mImsCall, new ImsReasonInfo(0, -1));
-        }
-        assertTrue(mCTUT.getSwitchingFgAndBgCallsValue());
-    }
-
-    @Test
-    @SmallTest
-    public void testCallRestrictedDisconnect() {
-        doReturn(true).when(mSST.mRestrictedState).isCsRestricted();
-        assertEquals(DisconnectCause.CS_RESTRICTED, mCTUT.getDisconnectCauseFromReasonInfo(
-                new ImsReasonInfo(ImsReasonInfo.CODE_RADIO_INTERNAL_ERROR, 0), Call.State.ACTIVE));
-    }
-
-    @Test
-    @SmallTest
-    public void testCallRestrictedEmergencyDisconnect() {
-        doReturn(true).when(mSST.mRestrictedState).isCsEmergencyRestricted();
-        assertEquals(DisconnectCause.CS_RESTRICTED_EMERGENCY,
+    public void testSipNotFoundRemap() {
+        assertEquals(DisconnectCause.INVALID_NUMBER,
                 mCTUT.getDisconnectCauseFromReasonInfo(
-                        new ImsReasonInfo(ImsReasonInfo.CODE_RADIO_INTERNAL_ERROR, 0),
-                        Call.State.ACTIVE));
-    }
-
-    @Test
-    @SmallTest
-    public void testCallRestrictedNormal() {
-        doReturn(true).when(mSST.mRestrictedState).isCsNormalRestricted();
-        assertEquals(DisconnectCause.CS_RESTRICTED_NORMAL,
-                mCTUT.getDisconnectCauseFromReasonInfo(
-                        new ImsReasonInfo(ImsReasonInfo.CODE_RADIO_INTERNAL_ERROR, 0),
-                        Call.State.ACTIVE));
+                        new ImsReasonInfo(ImsReasonInfo.CODE_SIP_NOT_FOUND, 0), Call.State.ACTIVE));
     }
 }
 
