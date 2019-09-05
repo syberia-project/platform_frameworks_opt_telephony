@@ -993,6 +993,13 @@ public class ImsPhoneConnection extends Connection implements
                 changed = true;
             }
 
+            // Metrics for audio codec
+            if (localCallProfile != null
+                    && localCallProfile.mMediaProfile.mAudioQuality != mAudioCodec) {
+                mAudioCodec = localCallProfile.mMediaProfile.mAudioQuality;
+                mMetrics.writeAudioCodecIms(mOwner.mPhone.getPhoneId(), imsCall.getCallSession());
+            }
+
             if (!mOwner.isViLteDataMetered()) {
                 Rlog.v(LOG_TAG, "data is not metered");
             } else {
@@ -1000,13 +1007,6 @@ public class ImsPhoneConnection extends Connection implements
                     mImsVideoCallProviderWrapper.setIsVideoEnabled(
                             hasCapabilities(Connection.Capability.SUPPORTS_VT_LOCAL_BIDIRECTIONAL));
                 }
-            }
-
-            // Metrics for audio codec
-            if (localCallProfile != null
-                    && localCallProfile.mMediaProfile.mAudioQuality != mAudioCodec) {
-                mAudioCodec = localCallProfile.mMediaProfile.mAudioQuality;
-                mMetrics.writeAudioCodecIms(mOwner.mPhone.getPhoneId(), imsCall.getCallSession());
             }
 
             int newAudioQuality =
