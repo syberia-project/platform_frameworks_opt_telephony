@@ -98,7 +98,6 @@ import com.android.internal.telephony.LocaleTracker;
 import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.PhoneConstants;
 import com.android.internal.telephony.PhoneFactory;
-import com.android.internal.telephony.PhoneInternalInterface;
 import com.android.internal.telephony.ServiceStateTracker;
 import com.android.internal.telephony.SubscriptionController;
 import com.android.internal.telephony.TelephonyProperties;
@@ -3669,25 +3668,44 @@ public class ImsPhoneCallTracker extends CallTracker implements ImsPullCall {
                 sendCallStartFailedDisconnect(callInfo.first, callInfo.second);
                 break;
             }
-
             case EVENT_REDIAL_WITHOUT_RTT: {
                 Pair<ImsCall, ImsReasonInfo> callInfo = (Pair<ImsCall, ImsReasonInfo>) msg.obj;
                 removeMessages(EVENT_REDIAL_WITHOUT_RTT);
                 ImsPhoneConnection oldConnection = findConnection(callInfo.first);
                 if (oldConnection == null) {
                     sendCallStartFailedDisconnect(callInfo.first, callInfo.second);
+                    loge("EVENT_REDIAL_WITHOUT_RTT: null oldConnection");
                     break;
                 }
                 mForegroundCall.detach(oldConnection);
                 removeConnection(oldConnection);
                 try {
-                    mPendingMO = null;
-                    ImsDialArgs newDialArgs = ImsDialArgs.Builder.from(mLastDialArgs)
-                            .setRttTextStream(null)
-                            .build();
+                    mLastDialArgs.intentExtras.putBoolean(
+                            android.telecom.TelecomManager.EXTRA_START_CALL_WITH_RTT, false);
+
+                    mLastDialArgs.intentExtras.putInt(
+                            QtiImsUtils.EXTRA_RETRY_CALL_FAIL_REASON,
+                            QtiImsUtils.CODE_RETRY_ON_IMS_WITHOUT_RTT);
+
+                    int callRadioTech = oldConnection.getCallRadioTech();
+                    log("old callRadioTech = " + callRadioTech);
+                    mLastDialArgs.intentExtras.putInt(
+                            QtiImsUtils.EXTRA_RETRY_CALL_FAIL_RADIOTECH, callRadioTech);
+
+                    mLastDialArgs = ImsPhone.ImsDialArgs.Builder.from(mLastDialArgs)
+                                            .setRttTextStream(null).build();
                     Connection newConnection =
-                            mPhone.getDefaultPhone().dial(mLastDialString, newDialArgs);
+                            mPhone.getDefaultPhone().dial(mLastDialString, mLastDialArgs);
                     oldConnection.onOriginalConnectionReplaced(newConnection);
+
+                    final ImsCall imsCall = mForegroundCall.getImsCall();
+                    final ImsCallProfile callProfile = imsCall.getCallProfile();
+                    /* update EXTRA_RETRY_ON_IMS_WITHOUT_RTT for clients to infer
+                       from this extra that the call is re-dialed without RTT */
+                    callProfile.setCallExtraBoolean(
+                            QtiImsUtils.EXTRA_RETRY_ON_IMS_WITHOUT_RTT, true);
+                    ImsPhoneConnection conn = findConnection(imsCall);
+                    conn.updateExtras(imsCall);
                 } catch (CallStateException e) {
                     sendCallStartFailedDisconnect(callInfo.first, callInfo.second);
                 }
